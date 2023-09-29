@@ -8,8 +8,10 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import smtplib
 import chardet
-from telegram import Update
-from telegram.ext import Updater, CommandHandler, CallbackContext
+import imaplib
+import email
+import re
+import types
 
 
 # Параметры для подключения к MySQL
@@ -26,12 +28,12 @@ bot = telebot.TeleBot('6376709843:AAFbZ6GrQqrFWCQZml1A7t-Y-SLwHarFhl0')
 
 # Mail.ru SMTP Configuration
 mailru_user = 'bcc_bot@mail.ru'
-mailru_password = 'rH5zf4N6q8nT9cR9b6fU'
-recipient_emails = ['sultan.amangeldiyev@narxoz.kz', 'kenzhe_03@mail.ru', 'bcc_bot@mail.ru', 'sultan.amangeldiyev@bcc.kz']
+mailru_password = 'Zfmsp62L2McNYfSJtZEN'
+recipient_emails = ['sultan.amangeldiyev@narxoz.kz', 'kenzhe_03@mail.ru', 'bcc_bot@mail.ru', 'itsupport@bcc.kz', 'sultan.amangeldiyev@bcc.kz']
 
 # Параметры для специальной почты
 special_email = 'bcc_bot@mail.ru'
-special_email_password = 'rH5zf4N6q8nT9cR9b6fU'
+special_email_password = 'Zfmsp62L2McNYfSJtZEN'
 
 def send_email(subject, body):
     try:
@@ -52,45 +54,11 @@ def send_email(subject, body):
         print("Ошибка при отправке уведомления:", e)
 
 user_requests = {}
-AUTHORIZED_USERNAMES1 = ['asm_003', 'Shalgimb']
+
 @bot.message_handler(commands=['start'])
 def start_message(message):
-    user_username = message.from_user.username
-    
-    if user_username in AUTHORIZED_USERNAMES1:
-        bot.send_message(message.chat.id, f'Здравствуйте {message.from_user.first_name}, введите ID Банкомата/Терминала, для получения статуса или отправки заявки')
-        # Остальной код для обработки команды
-    else:
-        bot.send_message(message.chat.id, "У вас нет прав доступа к этой команде.")
-
+    bot.send_message(message.chat.id, f'Здравствуйте {message.from_user.first_name}, введите ID Банкомата/Терминала, для получения статуса или отправки заявки')
     user_requests[message.chat.id] = {'id': None, 'processed': False}
-
-AUTHORIZED_USERNAMES2 = ['asm_003', 'Shalgimb']  # Здесь нужно указать разрешенные юзернеймы
-
-@bot.message_handler(commands=['closed'])
-def process_closed_command(message):
-    user_username = message.from_user.username
-    
-    if user_username not in AUTHORIZED_USERNAMES2:
-        bot.send_message(message.chat.id, "У вас нет прав доступа к этой команде.")
-        return
-    
-    user_requests.setdefault(message.chat.id, {})['closed'] = True
-    bot.send_message(message.chat.id, "Введите ID банкомата, чтобы удалить заявку")
-
-@bot.message_handler(func=lambda message: user_requests.get(message.chat.id, {}).get('closed', False))
-def close_request_step1(message):
-    terminal_id = message.text.upper().replace(" ", "")  # Приводим к верхнему регистру и убираем пробелы
-    
-    cur = conn.cursor()
-    cur.execute("DELETE FROM requests WHERE terminal_id = %s AND status = 'в работе'", (terminal_id,))
-    conn.commit()
-    
-    bot.send_message(message.chat.id, f'Заявка по банкомату ID:{terminal_id} успешно удалена из базы данных.')
-
-    # Очищаем данные о закрытии заявки
-    user_requests[message.chat.id].pop('closed', None)
-    cur.close()
 
 @bot.message_handler(content_types=['text'])
 def info(message):
@@ -143,8 +111,8 @@ def save_request_to_db(terminal_id, failure_type, callback):
         cur.execute("INSERT INTO requests (terminal_id, failure_type, timestamp, status) VALUES (%s, %s, %s, %s)", (terminal_id, failure_type, timestamp, "в работе"))
         conn.commit()
 
-        subject = f'Новая заявка на терминал {terminal_id}'
-        body = f'TB001\n{terminal_id} с типом сбоя: {failure_type}.'
+        subject = f'ID:~{terminal_id}'
+        body = f'TB001\n~{terminal_id}\nТип сбоя:{failure_type}.'
         send_email(subject, body)
 
         bot.send_message(callback.message.chat.id, f'Запрос на идентификатор терминала {terminal_id} успешно сохранен на сегодня.')
@@ -157,8 +125,8 @@ def save_request_to_db(terminal_id, failure_type, callback):
             cur.execute("INSERT INTO requests (terminal_id, failure_type, timestamp, status) VALUES (%s, %s, %s, %s)", (terminal_id, failure_type, timestamp, "в работе"))
             conn.commit()
 
-            subject = f'Новая заявка на терминал {terminal_id}'
-            body = f'TB001\n{terminal_id} с типом сбоя: {failure_type}.'
+            subject = f'ID:~{terminal_id}'
+            body = f'TB001\n~{terminal_id}\nТип сбоя:{failure_type}.'
             send_email(subject, body)
 
             bot.send_message(callback.message.chat.id, f'Запрос на идентификатор терминала {terminal_id} успешно сохранен на сегодня.')
@@ -202,7 +170,95 @@ def get_text_from_email(msg):
         decoded_text = msg.get_payload(decode=True).decode(charset)
         text += decoded_text
     return text
-    
+
+def process_email_notifications():
+    try:
+        # Подключение к почтовому серверу
+        mail = imaplib.IMAP4_SSL(imap_server)
+        mail.login(username, password)
+
+        # Выбор папки "Register" для чтения уведомлений о зарегистрированных запросах
+        mail.select('Register')
+
+        # Поиск сообщений в выбранной папке
+        result, data = mail.search(None, 'ALL')
+
+        if result == 'OK':
+            for num in data[0].split():
+                result, message_data = mail.fetch(num, '(RFC822)')
+                if result == 'OK':
+                    raw_email = message_data[0][1]
+                    msg = email.message_from_bytes(raw_email)
+                    subject = msg['Subject']
+                    body = get_text_from_email(msg)  # Извлеките текст письма
+
+                    # Извлеките номер заявки и другую информацию из темы и тела письма
+                    match = re.search(r'#(\d+)', subject)
+                    if match:
+                        request_number = match.group(1)
+                        # Обновите базу данных, пометив заявку как зарегистрированную и сохраните номер заявки
+                        cur = conn.cursor()
+                        cur.execute("UPDATE requests SET status = 'зарегистрировано', request_number = %s WHERE id = %s", (request_number, request_number))
+                        conn.commit()
+                        cur.close()
+
+        # Закрыть соединение с почтовым сервером
+        mail.logout()
+
+    except Exception as e:
+        print("Ошибка при обработке уведомлений из почты:", e)
+
+# Вызовите функцию для обработки уведомлений из почты
+process_email_notifications()
+
+def save_request_to_db(terminal_id, failure_type, request_number):
+    cur = conn.cursor()
+    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    cur.execute("INSERT INTO requests (terminal_id, failure_type, timestamp, status, request_number) VALUES (%s, %s, %s, %s, %s)",
+                (terminal_id, failure_type, timestamp, "сохранено", request_number))
+    conn.commit()
+    cur.close()
+
+
+
+imap_server = 'imap.mail.ru'
+username = 'bcc_bot@mail.ru'
+password = 'Zfmsp62L2McNYfSJtZEN'
+
+# Подключение к почтовому серверу
+mail = imaplib.IMAP4_SSL(imap_server)
+mail.login(username, password)
+
+# Выбор папки "Register" для чтения уведомлений о зарегистрированных запросах
+mail.select('Register')
+
+# Поиск сообщений в выбранной папке
+result, data = mail.search(None, 'ALL')
+
+if result == 'OK':
+    for num in data[0].split():
+        result, message_data = mail.fetch(num, '(RFC822)')
+        if result == 'OK':
+            raw_email = message_data[0][1]
+            msg = email.message_from_bytes(raw_email)
+            subject = msg['Subject']
+            # Извлеките номер заявки и другую информацию из темы письма и обновите базу данных
+
+# Повторите аналогичные шаги для папки "Closed" для уведомлений о решенных запросах
+mail.select('Closed')
+result, data = mail.search(None, 'ALL')
+if result == 'OK':
+    for num in data[0].split():
+        result, message_data = mail.fetch(num, '(RFC822)')
+        if result == 'OK':
+            raw_email = message_data[0][1]
+            msg = email.message_from_bytes(raw_email)
+            subject = msg['Subject']
+            # Извлеките номер заявки и обновите базу данных, пометив ее как выполненную
+
+# Закрыть соединение с почтовым сервером
+mail.logout()
+
 
 # Запуск бота
 bot.polling(none_stop=True)
