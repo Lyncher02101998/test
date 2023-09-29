@@ -1,1 +1,1 @@
-worker: python ваш_файл_с_ботом.py 
+worker: python mail1.py
