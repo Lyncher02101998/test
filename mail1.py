@@ -6,14 +6,16 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import smtplib
 import re
+import subprocess
+import time
 
 
 
 # Параметры для подключения к MySQL
 
 mysql_host = 'localhost'
-mysql_user = 'root'
-mysql_password = ''
+mysql_user = 'sa'
+mysql_password = 'Orapas$123'
 mysql_database = 'teldb'
 
 # Соединение с MySQL
@@ -57,6 +59,7 @@ def send_email(subject, body):
 
 user_requests = {}
 registered_requests = set()
+user_context = {}
 
 def process_registered_email(msg):
     subject = msg['Subject']
@@ -69,19 +72,7 @@ def process_registered_email(msg):
 @bot.message_handler(commands=['start'])
 def start_message(message):
     bot.send_message(message.chat.id, f'Здравствуйте {message.from_user.first_name}, введите ID Банкомата/Терминала, для получения статуса или отправки заявки')
-    user_requests[message.chat.id] = {'id': None, 'processed': False}
-
-def create_request(chat_id, terminal_id, failure_type):
-    cur = conn.cursor()
-    today_date = date.today().strftime('%Y-%m-%d')
-    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    
-    cur.execute("INSERT INTO requests (terminal_id, failure_type, timestamp, status) VALUES (%s, %s, %s, %s)", (terminal_id, failure_type, timestamp, "сохранено"))
-    conn.commit()
-    
-    subject = f'ID:~{terminal_id}'
-    body = f'TB001\n~{terminal_id}\nТип сбоя:{failure_type}.'
-    send_email(subject, body)
+    user_context[message.chat.id] = {'id': None, 'processed': False}
 
 
 @bot.message_handler(content_types=['text'])
@@ -117,6 +108,9 @@ def save_request_to_db(terminal_id, failure_type, callback):
     cur.execute('SELECT COUNT(*) FROM requests WHERE terminal_id = "' + terminal_id + '" ')
     existing_entries_count = cur.fetchone()[0]
 
+    # Удаление заявки из словаря user_requests
+    # del user_requests[callback.message.chat.id]
+
     if existing_entries_count == 0:
         # Если на сегодня нет записей, сохраняем запрос в БД со статусом "в работе"
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -134,7 +128,7 @@ def save_request_to_db(terminal_id, failure_type, callback):
     else:
         bot.send_message(callback.message.chat.id, f'Заявка по терминалу {terminal_id} уже существует. Инцидент в работе!')
 
-    cur.close()
+
 
 # def hide_status_message(chat_id, message_id):
 #     bot.edit_message_text(chat_id=chat_id, message_id=message_id, text='Скрыто')
@@ -142,15 +136,52 @@ def save_request_to_db(terminal_id, failure_type, callback):
 
 @bot.callback_query_handler(func=lambda callback: True)
 def callback_message(callback):
+    chat_id = callback.message.chat.id
+    
+    if chat_id not in user_context:
+        bot.send_message(chat_id, "Пожалуйста, начните снова /start")
+        return
+    
     if callback.data in ['cash_out', 'cash_in', 'out_service', 'offline', 'stuck']:
+        bot.edit_message_reply_markup(chat_id=chat_id, message_id=callback.message.message_id, reply_markup=None)
+        bot.delete_message(chat_id=chat_id, message_id=callback.message.message_id)  # Удалить сообщение "Прошу выбрать тип сбоя для отправки заявки"
+        terminal_id = user_context[chat_id]['id']
+        
+        if terminal_id is not None and not user_context[chat_id]['processed']:
+            save_request_to_db(terminal_id=terminal_id, failure_type=callback.data, callback=callback)
+            user_context[chat_id]['processed'] = True
 
-        bot.edit_message_reply_markup(chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=None)
-        # bot.send_message(callback.message.chat.id, f'Заявка по данному (ID {mess} Тип: {callback.data}) отправлена!')
-        save_request_to_db(terminal_id=mess, failure_type=callback.data, callback=callback)
-      # hide_status_message(callback.message.chat.id, callback.message.message_id)
+        cur = conn.cursor()
+        cur.execute('SELECT COUNT(*) FROM requests WHERE terminal_id = "' + mess + '" ')
+        existing_entries_count = cur.fetchone()[0]
+        cur.close()
+    
+#     if callback.data in ['cash_out', 'cash_in', 'out_service', 'offline', 'stuck']:
+#         bot.edit_message_reply_markup(chat_id=chat_id, message_id=callback.message.message_id, reply_markup=None)
+#         bot.delete_message(chat_id=chat_id, message_id=callback.message.message_id)  # Удалить сообщение "Прошу выбрать тип сбоя для отправки заявки"
+#         terminal_id = user_context[chat_id]['id']
+        
+#         if terminal_id is not None and not user_context[chat_id]['processed']:
+#             save_request_to_db(terminal_id=terminal_id, failure_type=callback.data, callback=callback)
+#             user_context[chat_id]['processed'] = True
+
+        
+
+        # if existing_entries_count == 0:
+        #     # Удаление заявки из словаря user_requests
+        #     del bot.reply_to
+        #     del user_requests[callback.message.chat.id]
 
 # Запуск бота
 bot.polling(none_stop=True)
 
 # Закрыть соединение с базой данных
 conn.close()
+
+# while True:
+#     try:
+#         subprocess.run(['python', 'C:/Users/Администратор/Desktop/Sultan/python1/mail1.py'])
+#         time.sleep(5)  # Подождать 1 час перед следующим запуском
+#         print("Бот перезапущен")
+#     except Exception as e:
+#         print(f"Произошла ошибка: {e}")
